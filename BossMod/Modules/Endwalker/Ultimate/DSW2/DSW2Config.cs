@@ -120,6 +120,18 @@ public sealed class DSW2Config() : ConfigNode()
     [PropertyDisplay("P3 enumeration towers: prefer flexing to CCW tower (rather than to CW)")]
     public bool P3DarkdragonDiveCounterPreferCCWFlex = false;
 
+    public enum P5HeavensflameStrategy
+    {
+        [PropertyDisplay("LPDU: fixed shape positions")]
+        LPDU,
+
+        [PropertyDisplay("NAUR / APD: dooms anchor, non-dooms adjust")]
+        NAUR,
+    }
+
+    [PropertyDisplay("P5 Death of the Heavens: PlayStation positions")]
+    public P5HeavensflameStrategy P5HeavensflamePositions = P5HeavensflameStrategy.LPDU;
+
     public enum P6MortalVow
     {
         [PropertyDisplay("Don't assume any order")]

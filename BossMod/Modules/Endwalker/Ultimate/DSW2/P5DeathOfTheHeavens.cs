@@ -41,12 +41,14 @@ sealed class P5DeathOfTheHeavensLightningStorm : Components.UniformStackSpread
 sealed class P5DeathOfTheHeavensHeavensflame(BossModule module) : Components.GenericKnockback(module, (uint)AID.HeavensflameAOE)
 {
     public bool KnockbackDone;
+    private readonly DSW2Config _config = Service.Config.Get<DSW2Config>();
     private readonly WPos[] _playerAdjustedPositions = new WPos[PartyState.MaxPartySize];
     private readonly int[] _playerIcons = new int[PartyState.MaxPartySize]; // 0 = unassigned, 1 = circle/red, 2 = triangle/green, 3 = cross/blue, 4 = square/purple
     private BitMask _brokenTethers;
     private BitMask _dooms;
     private readonly List<WPos> _cleanses = [];
     private WDir _relSouth; // TODO: this is quite hacky, works for LPDU...
+    private readonly WDir[] _naurDoomDirections = new WDir[PartyState.MaxPartySize];
 
     private const float _knockbackDistance = 16f;
     private const float _aoeRadius = 10f;
@@ -127,7 +129,15 @@ sealed class P5DeathOfTheHeavensHeavensflame(BossModule module) : Components.Gen
     public override void OnStatusGain(Actor actor, ref ActorStatus status)
     {
         if (status.ID == (uint)SID.Doom)
-            _dooms[Raid.FindSlot(actor.InstanceID)] = true;
+        {
+            var slot = Raid.FindSlot(actor.InstanceID);
+            if (slot is >= 0 and < PartyState.MaxPartySize)
+            {
+                _dooms[slot] = true;
+                if (_playerIcons.Any(i => i != 0))
+                    CaptureNaurAnchors();
+            }
+        }
     }
 
     public override void OnUntethered(Actor source, in ActorTetherInfo tether)
@@ -149,8 +159,27 @@ sealed class P5DeathOfTheHeavensHeavensflame(BossModule module) : Components.Gen
         if (icon != 0)
         {
             var slot = Raid.FindSlot(actor.InstanceID);
-            if (slot >= 0)
+            if (slot is >= 0 and < PartyState.MaxPartySize)
+            {
                 _playerIcons[slot] = icon;
+                CaptureNaurAnchors();
+            }
+        }
+    }
+
+    private void CaptureNaurAnchors()
+    {
+        if (_config.P5HeavensflamePositions != DSW2Config.P5HeavensflameStrategy.NAUR)
+            return;
+        // Capture the planted sides as icons appear, before non-dooms adjust.
+        for (var i = 0; i < PartyState.MaxPartySize; ++i)
+        {
+            if (_dooms[i] && _naurDoomDirections[i] == default && Raid[i] is { IsDeadOrDestroyed: false } player)
+            {
+                var offset = player.Position - Arena.Center;
+                if (offset.LengthSq() > 1f)
+                    _naurDoomDirections[i] = offset.Normalized();
+            }
         }
     }
 
@@ -166,14 +195,14 @@ sealed class P5DeathOfTheHeavensHeavensflame(BossModule module) : Components.Gen
         return -1;
     }
 
-    // note: assumes LPDU strat (circles on E/W cleanses, triangles on SE/NW, crosses on N/S, squares on SW/NE)
-    // TODO: handle bad cleanse placements somehow? or even deaths?
-    // TODO: support dooms plant strat (APD) - doom shapes don't move, partners adjust to opposite side
     private List<WPos> PositionHints(int slot)
     {
         var icon = _playerIcons[slot];
         if (icon == 0)
             return [];
+        if (_config.P5HeavensflamePositions == DSW2Config.P5HeavensflameStrategy.NAUR)
+            return NaurPositionHints(slot);
+        // LPDU: circles on E/W cleanses, triangles on SE/NW, crosses on N/S, squares on SW/NE.
         var center = Arena.Center;
         var angle = Angle.FromDirection(_relSouth) + 135f.Degrees() - icon * 45f.Degrees();
         var offset = _tetherBreakDistance * 0.5f * angle.ToDirection();
@@ -195,6 +224,54 @@ sealed class P5DeathOfTheHeavensHeavensflame(BossModule module) : Components.Gen
                 break;
         }
         return hints;
+    }
+
+    private List<WPos> NaurPositionHints(int slot)
+    {
+        var cleanses = _cleanses.Distinct().ToArray();
+        if (cleanses.Length > 4)
+            return [];
+        var anchorSlot = _dooms[slot] ? slot : FindTetheredPartner(slot);
+        if (anchorSlot >= 0 && _dooms[anchorSlot])
+        {
+            if (NaurCleanse(anchorSlot, cleanses) is not { } cleanse)
+                return [];
+            // Two dooms claiming one puddle is ambiguous; do not direct either pair there.
+            for (var i = 0; i < PartyState.MaxPartySize; ++i)
+                if (i != anchorSlot && _dooms[i] && NaurCleanse(i, cleanses) == cleanse)
+                    return [];
+            return [_dooms[slot] ? cleanse : Arena.Center - (cleanse - Arena.Center)];
+        }
+        if (_playerIcons[slot] == 3 && cleanses.Length == 4)
+        {
+            WDir south = default;
+            foreach (var cleanse in cleanses)
+                south += cleanse - Arena.Center;
+            if (south.LengthSq() > 1f)
+            {
+                var offset = _tetherBreakDistance * 0.5f * south.Normalized();
+                return [Arena.Center + offset, Arena.Center - offset];
+            }
+        }
+        return [];
+    }
+
+    private WPos? NaurCleanse(int slot, WPos[] cleanses)
+    {
+        var direction = _naurDoomDirections[slot];
+        WPos? result = null;
+        var minAlignment = 30f.Degrees().Cos();
+        foreach (var cleanse in cleanses)
+        {
+            var alignment = direction.Dot((cleanse - Arena.Center).Normalized());
+            if (alignment > minAlignment)
+            {
+                if (result != null)
+                    return null;
+                result = cleanse;
+            }
+        }
+        return result;
     }
 
     private WPos ClosestCleanse(WPos p) => _cleanses.MinBy(c => (c - p).LengthSq());
